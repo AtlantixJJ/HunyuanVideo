@@ -458,7 +458,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             image = self.vae.decode(latents, return_dict=False)[0]
         else:
             image = self.vae.decode(latents, return_dict=False)[0]
-        image = (image / 2 + 0.5).clamp(0, 1)
+        image = (image / 2 + 0.5).clamp(0, 1) # output is (-1, 1) scale
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
         if image.ndim == 4:
             image = image.cpu().permute(0, 2, 3, 1).float()

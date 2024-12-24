@@ -30,8 +30,10 @@ def main():
     data_dir = 'data/hunyuan_distillation'
     prompt_file = f'{data_dir}/new_prompts.txt'
     prompts = [l.strip() for l in open(prompt_file, 'r').readlines() if len(l) > 5]
+    n_rank, rank = int(args.n_rank), int(args.rank)
+    prompts = [(idx, prompts[idx]) for idx in range(rank, len(prompts), n_rank)]
 
-    for idx, prompt in enumerate(prompts):
+    for idx, prompt in prompts:
         for i in range(3):
             # Start sampling
             # TODO: batch inference check

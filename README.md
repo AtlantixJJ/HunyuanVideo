@@ -372,8 +372,8 @@ torchrun --nproc_per_node=4 sample_video.py \
 
   
 torchrun --nproc_per_node=4 batch_generate.py \
-    --video-size 960 960 \
-    --video-length 89 \
+    --video-size 720 1280 \
+    --video-length 33 \
     --infer-steps 50 \
     --prompt "A cat walks on the grass, realistic style." \
     --flow-reverse \
@@ -381,6 +381,7 @@ torchrun --nproc_per_node=4 batch_generate.py \
     --ulysses-degree 4 \
     --ring-degree 1 \
     --save-path ./results
+
 ```
 
 You can change the `--ulysses-degree` and `--ring-degree` to control the parallel configurations for the best performance. The valid parallel configurations are shown in the following table.
