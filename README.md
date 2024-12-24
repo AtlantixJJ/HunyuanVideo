@@ -310,8 +310,8 @@ We list the height/width/frame settings we support in the following table.
 ```bash
 cd HunyuanVideo
 
-python3 sample_video.py \
-    --video-size 720 1280 \
+python batch_generate.py \
+    --video-size 960 960 \
     --video-length 129 \
     --infer-steps 50 \
     --prompt "A cat walks on the grass, realistic style." \
@@ -359,14 +359,26 @@ For example, to generate a video with 8 GPUs, you can use the following command:
 ```bash
 cd HunyuanVideo
 
-torchrun --nproc_per_node=8 sample_video.py \
-    --video-size 1280 720 \
+torchrun --nproc_per_node=4 sample_video.py \
+    --video-size 720 1280 \
     --video-length 129 \
     --infer-steps 50 \
     --prompt "A cat walks on the grass, realistic style." \
     --flow-reverse \
     --seed 42 \
-    --ulysses-degree 8 \
+    --ulysses-degree 4 \
+    --ring-degree 1 \
+    --save-path ./results
+
+  
+torchrun --nproc_per_node=4 batch_generate.py \
+    --video-size 960 960 \
+    --video-length 89 \
+    --infer-steps 50 \
+    --prompt "A cat walks on the grass, realistic style." \
+    --flow-reverse \
+    --seed 42 \
+    --ulysses-degree 4 \
     --ring-degree 1 \
     --save-path ./results
 ```

@@ -1043,6 +1043,9 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                     if callback is not None and i % callback_steps == 0:
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, t, latents)
+        
+
+        self.transformer.to('cpu') # save memory
 
         if not output_type == "latent":
             expand_temporal_dim = False
@@ -1090,6 +1093,8 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
         image = image.cpu().float()
+
+        self.transformer.to(device) # restore
 
         # Offload all models
         self.maybe_free_model_hooks()

@@ -44,7 +44,7 @@ def main():
         embedded_guidance_scale=args.embedded_cfg_scale
     )
     samples = outputs['samples']
-    
+
     # Save samples
     if 'LOCAL_RANK' not in os.environ or int(os.environ['LOCAL_RANK']) == 0:
         for i, sample in enumerate(samples):
