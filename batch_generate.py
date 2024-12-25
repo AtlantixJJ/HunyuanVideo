@@ -23,44 +23,42 @@ def main():
 
     # Load models
     hunyuan_video_sampler = HunyuanVideoSampler.from_pretrained(models_root_path, args=args)
-    
+
     # Get the updated args
     args = hunyuan_video_sampler.args
 
     data_dir = 'data/hunyuan_distillation'
     prompt_file = f'{data_dir}/new_prompts.txt'
     prompts = [l.strip() for l in open(prompt_file, 'r').readlines() if len(l) > 5]
-    n_rank, rank = int(args.n_rank), int(args.rank)
+    #n_rank, rank = int(args.n_rank), int(args.rank)
+    n_rank, rank = 1, 0
     prompts = [(idx, prompts[idx]) for idx in range(rank, len(prompts), n_rank)]
-
     for idx, prompt in prompts:
-        for i in range(3):
-            # Start sampling
-            # TODO: batch inference check
-            seed = np.random.randint(0, 100000)
-            output_path = f'{data_dir}/{idx:05d}_seed{seed}.mp4'
-            outputs = hunyuan_video_sampler.predict(
-                prompt=prompt, 
-                height=args.video_size[0],
-                width=args.video_size[1],
-                video_length=args.video_length,
-                seed=args.seed + seed,
-                negative_prompt=args.neg_prompt,
-                infer_steps=args.infer_steps,
-                guidance_scale=args.cfg_scale,
-                num_videos_per_prompt=args.num_videos,
-                flow_shift=args.flow_shift,
-                batch_size=args.batch_size,
-                embedded_guidance_scale=args.embedded_cfg_scale
-            )
-            samples = outputs['samples']
+        # Start sampling
+        output_path = f'{data_dir}/{idx:05d}.mp4'
+        print(prompt)
+        outputs = hunyuan_video_sampler.predict(
+            prompt=prompt, 
+            height=args.video_size[0],
+            width=args.video_size[1],
+            video_length=args.video_length,
+            seed=args.seed,
+            negative_prompt=args.neg_prompt,
+            infer_steps=args.infer_steps,
+            guidance_scale=args.cfg_scale,
+            num_videos_per_prompt=args.num_videos,
+            flow_shift=args.flow_shift,
+            batch_size=args.batch_size,
+            embedded_guidance_scale=args.embedded_cfg_scale
+        )
+        samples = outputs['samples']
 
-            # Save samples
-            if 'LOCAL_RANK' not in os.environ or int(os.environ['LOCAL_RANK']) == 0:
-                for i, sample in enumerate(samples):
-                    sample = samples[i].unsqueeze(0)
-                    save_videos_grid(sample, output_path, fps=24)
-                    logger.info(f'Sample save to: {save_path}')
+        # Save samples
+        if 'LOCAL_RANK' not in os.environ or int(os.environ['LOCAL_RANK']) == 0:
+            for i, sample in enumerate(samples):
+                sample = samples[i].unsqueeze(0)
+                save_videos_grid(sample, output_path, fps=24)
+                logger.info(f'Sample save to: {save_path}')
 
 if __name__ == "__main__":
     main()

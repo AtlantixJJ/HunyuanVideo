@@ -378,6 +378,8 @@ def add_parallel_args(parser: argparse.ArgumentParser):
         help="Ulysses degree.",
     )
 
+
+    """
     group.add_argument(
         "--n-rank",
         type=int,
@@ -390,6 +392,7 @@ def add_parallel_args(parser: argparse.ArgumentParser):
         default=0,
         help="Current rank.",
     )
+    """
 
     return parser
 

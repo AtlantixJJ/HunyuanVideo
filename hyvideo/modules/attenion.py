@@ -45,7 +45,7 @@ def get_cu_seqlens(text_mask, img_len):
     text_len = text_mask.sum(dim=1)
     max_len = text_mask.shape[1] + img_len
 
-    cu_seqlens = torch.zeros([2 * batch_size + 1], dtype=torch.int32, device="cuda")
+    cu_seqlens = torch.zeros([2 * batch_size + 1], dtype=torch.int32, device=text_mask.device)
 
     for i in range(batch_size):
         s = text_len[i] + img_len
@@ -166,6 +166,7 @@ def parallel_attention(
     cu_seqlens_q,
     cu_seqlens_kv
 ):
+    # This is causing tensor to be stored in cuda:0
     attn1 = hybrid_seq_parallel_attn(
         None,
         q[:, :img_q_len, :, :],
@@ -178,6 +179,7 @@ def parallel_attention(
         joint_tensor_value=v[:,img_kv_len:cu_seqlens_kv[1]],
         joint_strategy="rear",
     )
+
     if flash_attn.__version__ >= '2.7.0':
         attn2, *_ = _flash_attn_forward(
             q[:,cu_seqlens_q[1]:],

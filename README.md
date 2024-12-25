@@ -370,10 +370,23 @@ torchrun --nproc_per_node=4 sample_video.py \
     --ring-degree 1 \
     --save-path ./results
 
-  
-torchrun --nproc_per_node=4 batch_generate.py \
+
+
+torchrun --nproc_per_node=8 sample_video.py \
     --video-size 720 1280 \
     --video-length 33 \
+    --infer-steps 50 \
+    --prompt "A cat walks on the grass, realistic style." \
+    --flow-reverse \
+    --seed 42 \
+    --ulysses-degree 8 \
+    --ring-degree 1 \
+    --save-path ./results
+
+
+torchrun --nproc_per_node=4 batch_generate.py \
+    --video-size 960 960 \
+    --video-length 129 \
     --infer-steps 50 \
     --prompt "A cat walks on the grass, realistic style." \
     --flow-reverse \
