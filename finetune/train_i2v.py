@@ -15,8 +15,12 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed, InitProcessGroupKwargs
 
-import transformers
-from transformers import AutoTokenizer, T5EncoderModel, T5Tokenizer
+sys.path.append('.')
+from hyvideo.vae import load_vae as load_hyvideo_vae
+from hyvideo.modules import HYVideoDiffusionTransformer, HUNYUAN_VIDEO_CONFIG
+from hyvideo.modules.posemb_layers import get_nd_rotary_pos_embed
+from hyvideo.diffusion.schedulers import FlowMatchDiscreteScheduler
+from lib.basetype import EasyDict
 
 import diffusers
 from diffusers.utils import export_to_video
@@ -51,31 +55,10 @@ def get_args():
 
     # Model information
     parser.add_argument(
-        "--pretrained_model_name_or_path",
+        "--pretrained_model_path",
         type=str,
-        default=None,
-        required=True,
+        default='ckpts/hunyuan-video-t2v-720p/transformers/mp_rank_00_model_states.pt',
         help="Path to pretrained model or model identifier from huggingface.co/models.",
-    )
-    parser.add_argument(
-        "--pretrained_lora_path",
-        type=str,
-        default=None,
-        help="Path to pretrained lora",
-    )
-    
-    parser.add_argument(
-        "--revision",
-        type=str,
-        default=None,
-        required=False,
-        help="Revision of pretrained model identifier from huggingface.co/models.",
-    )
-    parser.add_argument(
-        "--variant",
-        type=str,
-        default=None,
-        help="Variant of the model files of the pretrained model identifier from huggingface.co/models, 'e.g.' fp16",
     )
 
     parser.add_argument(
@@ -84,39 +67,13 @@ def get_args():
         default=0,
         help=("The lowest training step."),
     )
-    parser.add_argument(
-        "--stochastic_layers",
-        type=int,
-        default=0,
-        help=("Whether to use stochastic layers in the controlnet."),
-    )
-    parser.add_argument(
-        "--controlnet_mode",
-        type=str,
-        default='elementwise',
-        required=True,
-        help=("Controlnet type. (canny, hed, etc.)"),
-    )
-    parser.add_argument(
-        "--fixed_cond_timestep",
-        type=int,
-        default=-1,
-        help="Whether to use fixed timestep for conditioning.",
-    )
-    parser.add_argument(
-        "--pretrained_controlnet_path",
-        type=str,
-        default=None,
-        required=False,
-        help=("Path to controlnet .pt checkpoint."),
-    )
 
     # Training information
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
     parser.add_argument(
         "--mixed_precision",
         type=str,
-        default=None,
+        default="fp16",
         choices=["no", "fp16", "bf16"],
         help=(
             "Whether to use mixed precision. Choose between fp16 and bf16 (bfloat16). Bf16 requires PyTorch >="
@@ -144,22 +101,6 @@ def get_args():
         help=("The parquet annotation file for the dataset."),
     )
     parser.add_argument(
-        "--height",
-        type=int,
-        default=480,
-        help="All input videos are resized to this height.",
-    )
-    parser.add_argument(
-        "--width",
-        type=int,
-        default=720,
-        help="All input videos are resized to this width.",
-    )
-
-    parser.add_argument(
-        "--max_num_frames", type=int, default=49, help="All input videos will be truncated to these many frames."
-    )
-    parser.add_argument(
         "--train_batch_size", type=int, default=1, help="Batch size (per device) for the training dataloader."
     )
     parser.add_argument("--num_train_epochs", type=int, default=1)
@@ -180,21 +121,10 @@ def get_args():
         ),
     )
     parser.add_argument(
-        "--checkpoints_total_limit",
-        type=int,
-        default=None,
-        help=("Max number of checkpoints to store."),
-    )
-    parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
         default=1,
         help="Number of updates steps to accumulate before performing a backward/update pass.",
-    )
-    parser.add_argument(
-        "--gradient_checkpointing",
-        action="store_true",
-        help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
     )
     parser.add_argument(
         "--gc_ratio",
@@ -274,16 +204,6 @@ def get_args():
         action="store_true",
         help="Remove lr from the denominator of D estimate to avoid issues during warm-up stage.",
     )
-
-    # Other information
-    parser.add_argument("--tracker_name", type=str, default=None, help="Project tracker name")
-
-    parser.add_argument(
-        "--logging_dir",
-        type=str,
-        default="logs",
-        help="Directory where logs are stored.",
-    )
     parser.add_argument(
         "--allow_tf32",
         action="store_true",
@@ -292,16 +212,13 @@ def get_args():
             " https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices"
         ),
     )
+
     parser.add_argument(
-        "--report_to",
+        "--logging_dir",
         type=str,
-        default=None,
-        help=(
-            'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
-            ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
-        ),
+        default="logs",
+        help="Directory where logs are stored.",
     )
-    parser.add_argument("--nccl_timeout", type=int, default=600, help="NCCL backend timeout in seconds.")
     return parser.parse_args()
 
 
@@ -309,14 +226,12 @@ class VideoDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         root_dir: Optional[str] = None,
-        prompt_embed_file: Optional[str] = None, # pre-computed prompt embeddings
     ) -> None:
         super().__init__()
         self.root_dir = root_dir
-        self.prompt_embed_dic = torch.load(prompt_embed_file)
         self.scaling_factor = None # need to be filled later
         # find all video latents
-        self.video_latent_files = sorted(glob.glob(os.path.join(root_dir, '*cogvideoxlatents.pth')))
+        self.video_latent_files = sorted(glob.glob(os.path.join(root_dir, '*.pth')))
 
     def __len__(self):
         return len(self.video_latent_files)
@@ -324,48 +239,19 @@ class VideoDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         latent_path = self.video_latent_files[index]
         idx = latent_path[latent_path.rfind('/')+1:]
-        idx = int(idx[:idx.find('_')])
-        print(latent_path, idx)
-        vl_params = torch.load(latent_path)
-        latent_dist = DiagonalGaussianDistribution(vl_params)
-        video_latents = latent_dist.sample()[0] * self.scaling_factor
-        first_latents = latent_dist.sample()[0] * self.scaling_factor
+        idx = int(idx[:idx.find('.')])
+        dic = torch.load(latent_path)
+        video_latents = dic['video_latent'][0] * self.scaling_factor
+        first_latents = video_latents.clone()
         first_latents[:, 1:] = 0
 
         return {
-            "prompt_embeds": self.prompt_embed_dic[idx][0], # remove batch dimension
-            "video_latents": video_latents,
-            "image_latents": first_latents,
+            'prompt_embed1': dic['prompt_embed1'][0],
+            'prompt_embed2': dic['prompt_embed2'][0],
+            'attention_mask1': dic['attention_mask1'][0],
+            'video_latents': video_latents,
+            'image_latents': first_latents,
         }
-
-
-def prepare_rotary_positional_embeddings(
-    height: int,
-    width: int,
-    num_frames: int,
-    vae_scale_factor_spatial: int = 8,
-    patch_size: int = 2,
-    attention_head_dim: int = 64,
-    device: Optional[torch.device] = None,
-    base_height: int = 480,
-    base_width: int = 720,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    grid_height = height // (vae_scale_factor_spatial * patch_size)
-    grid_width = width // (vae_scale_factor_spatial * patch_size)
-    base_size_width = base_width // (vae_scale_factor_spatial * patch_size)
-    base_size_height = base_height // (vae_scale_factor_spatial * patch_size)
-
-    grid_crops_coords = get_resize_crop_region_for_grid((grid_height, grid_width), base_size_width, base_size_height)
-    freqs_cos, freqs_sin = get_3d_rotary_pos_embed(
-        embed_dim=attention_head_dim,
-        crops_coords=grid_crops_coords,
-        grid_size=(grid_height, grid_width),
-        temporal_size=num_frames,
-    )
-
-    freqs_cos = freqs_cos.to(device=device)
-    freqs_sin = freqs_sin.to(device=device)
-    return freqs_cos, freqs_sin
 
 
 def get_optimizer(args, params_to_optimize, use_deepspeed: bool = False):
@@ -448,6 +334,7 @@ def get_optimizer(args, params_to_optimize, use_deepspeed: bool = False):
 
     return optimizer
 
+
 @torch.no_grad
 def visualize_latent(vae, cond_latents, save_path):
     x = cond_latents.permute(0, 2, 1, 3, 4) / vae.config.scaling_factor
@@ -459,65 +346,150 @@ def visualize_latent(vae, cond_latents, save_path):
     export_to_video(cond_image, save_path)
 
 
-class CNN(torch.nn.Module):
-    def __init__(self, in_dim=16, hidden_dim=256, out_dim=8, n_layer=3):
-        super().__init__()
-        
-        dims = [in_dim] + [hidden_dim] * (n_layer - 2) + [out_dim]
-        self.conv_layers = torch.nn.ModuleList([
-            torch.nn.Conv2d(prev_dim, cur_dim, 3, 1, 1)
-            for prev_dim, cur_dim in zip(dims[:-1], dims[1:])])
+def compute_density_for_timestep_sampling(
+    weighting_scheme: str, batch_size: int, logit_mean: float = None, logit_std: float = None, mode_scale: float = None
+):
+    """
+    Compute the density for sampling the timesteps when doing SD3 training.
 
-        self.in_dim = in_dim
-        self.out_dim = out_dim
+    Courtesy: This was contributed by Rafie Walker in https://github.com/huggingface/diffusers/pull/8528.
 
-    def forward(self, input):
-        x = input
-        for layer in self.conv_layers:
-            x = torch.nn.functional.relu(layer(x))
-        return x + input[:, :self.out_dim]
+    SD3 paper reference: https://arxiv.org/abs/2403.03206v1.
+    """
+    if weighting_scheme == "logit_normal":
+        # See 3.1 in the SD3 paper ($rf/lognorm(0.00,1.00)$).
+        u = torch.normal(mean=logit_mean, std=logit_std, size=(batch_size,), device="cpu")
+        u = torch.nn.functional.sigmoid(u)
+    elif weighting_scheme == "mode":
+        u = torch.rand(size=(batch_size,), device="cpu")
+        u = 1 - u - mode_scale * (torch.cos(math.pi * u / 2) ** 2 - 1 + u)
+    else:
+        u = torch.rand(size=(batch_size,), device="cpu")
+    return u
 
 
-def inference_step(args, video_latents, image_latents, timesteps, transformer, scheduler, prompt_embeds, image_rotary_emb):
+def compute_loss_weighting_for_sd3(weighting_scheme: str = 'sigma_sqrt', sigmas=None):
+    """
+    Computes loss weighting scheme for SD3 training.
+
+    Courtesy: This was contributed by Rafie Walker in https://github.com/huggingface/diffusers/pull/8528.
+
+    SD3 paper reference: https://arxiv.org/abs/2403.03206v1.
+    """
+    if weighting_scheme == "sigma_sqrt":
+        weighting = (sigmas**-2.0).float()
+    elif weighting_scheme == "cosmap":
+        bot = 1 - 2 * sigmas + 2 * sigmas**2
+        weighting = 2 / (math.pi * bot)
+    else:
+        weighting = torch.ones_like(sigmas)
+    return weighting
+
+
+def get_rotary_pos_embed(model, video_length=65, height=960, width=960, rope_theta=256):
+    target_ndim = 3
+    ndim = 5 - 2
+    latents_size = [(video_length - 1) // 4 + 1, height // 8, width // 8]
+
+    if isinstance(model.patch_size, int):
+        assert all(s % model.patch_size == 0 for s in latents_size), (
+            f"Latent size(last {ndim} dimensions) should be divisible by patch size({model.patch_size}), "
+            f"but got {latents_size}."
+        )
+        rope_sizes = [s // model.patch_size for s in latents_size]
+    elif isinstance(model.patch_size, list):
+        assert all(
+            s % model.patch_size[idx] == 0
+            for idx, s in enumerate(latents_size)
+        ), (
+            f"Latent size(last {ndim} dimensions) should be divisible by patch size({model.patch_size}), "
+            f"but got {latents_size}."
+        )
+        rope_sizes = [
+            s // model.patch_size[idx] for idx, s in enumerate(latents_size)
+        ]
+
+    if len(rope_sizes) != target_ndim:
+        rope_sizes = [1] * (target_ndim - len(rope_sizes)) + rope_sizes  # time axis
+    head_dim = model.hidden_size // model.heads_num
+    rope_dim_list = model.rope_dim_list
+    if rope_dim_list is None:
+        rope_dim_list = [head_dim // target_ndim for _ in range(target_ndim)]
+    assert (
+        sum(rope_dim_list) == head_dim
+    ), "sum(rope_dim_list) should equal to head_dim of attention layer"
+    freqs_cos, freqs_sin = get_nd_rotary_pos_embed(
+        rope_dim_list,
+        rope_sizes,
+        theta=rope_theta,
+        use_real=True,
+        theta_rescale_factor=1,
+    )
+
+    return freqs_cos, freqs_sin
+
+
+
+
+def inference_step(input_dic, transformer, scheduler):
     # Add noise to the model input according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
-    noise = torch.randn_like(video_latents)
-    noisy_video_latents = scheduler.add_noise(video_latents, noise, timesteps)
-    noisy_model_input = torch.cat([noisy_video_latents, image_latents], dim=2)
+    video_latents = input_dic['video_latents']
+    device, dtype = video_latents.device, video_latents.dtype
+    n_dim = video_latents.ndim
+
+    embedded_guidance_scale = 6.0
+    guidance_expand = torch.tensor(
+        [embedded_guidance_scale] * video_latents.shape[0],
+        dtype=dtype, device=device) * 1000.0
+    #guidance_expand = None
+
+    timesteps = input_dic['timesteps']
+    t_expand = timesteps.repeat(video_latents.shape[0])
+
+    schedule_timesteps = scheduler.timesteps.to(device)
+    step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
+
+    sigmas = scheduler.sigmas.to(device=device, dtype=dtype)
+    sigma = sigmas[step_indices].flatten()
+    while len(sigma.shape) < n_dim:
+        sigma = sigma.unsqueeze(-1)
+
+    # Add noise according to flow matching.
+    noise = torch.randn_like(video_latents, device=device, dtype=dtype)
+    noisy_model_input = (1.0 - sigma) * video_latents + sigma * noise
 
     # Predict the noise residual
-    model_output = transformer(
-        hidden_states=noisy_model_input,
-        encoder_hidden_states=prompt_embeds,
-        timestep=timesteps,
-        image_rotary_emb=image_rotary_emb,
-        return_dict=False,
-        gc_ratio=args.gc_ratio,
-    )[0]
-
-    model_pred = scheduler.get_velocity(
-        model_output, noisy_video_latents, timesteps)
-    return model_pred
+    noise_pred = transformer(  # For an input image (129, 192, 336) (1, 256, 256)
+        noisy_model_input,  # [2, 16, 33, 24, 42]
+        t_expand,  # [2]
+        text_states=input_dic['prompt_embed1'],  # [2, 256, 4096]
+        text_mask=input_dic['attention_mask1'],  # [2, 256]
+        text_states_2=input_dic['prompt_embed2'],  # [2, 768]
+        freqs_cos=input_dic['freqs_cis'][0],  # [seqlen, head_dim]
+        freqs_sin=input_dic['freqs_cis'][1],  # [seqlen, head_dim]
+        guidance=guidance_expand,
+        return_dict=True,
+    )['x']
+    z0 = noisy_model_input + noise_pred * sigma
+    return z0
 
 
 if __name__ == "__main__":
     args = get_args()
 
-    if torch.backends.mps.is_available() and args.mixed_precision == "bf16":
-        # due to pytorch#99272, MPS does not yet support bfloat16.
-        raise ValueError(
-            "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
-        )
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir)
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    init_kwargs = InitProcessGroupKwargs(backend="nccl", timeout=timedelta(seconds=args.nccl_timeout))
+    init_kwargs = InitProcessGroupKwargs(backend="nccl", timeout=timedelta(seconds=3600))
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
-        log_with=args.report_to,
+        log_with='wandb',
         project_config=accelerator_project_config,
         kwargs_handlers=[ddp_kwargs, init_kwargs],
     )
+    device = accelerator.device
+    dtype = torch.float16 if args.mixed_precision == "fp16" else torch.bfloat16
 
     # Disable AMP for MPS.
     if torch.backends.mps.is_available():
@@ -530,12 +502,6 @@ if __name__ == "__main__":
         level=logging.INFO,
     )
     logger.info(accelerator.state, main_process_only=False)
-    if accelerator.is_local_main_process:
-        transformers.utils.logging.set_verbosity_warning()
-        diffusers.utils.logging.set_verbosity_info()
-    else:
-        transformers.utils.logging.set_verbosity_error()
-        diffusers.utils.logging.set_verbosity_error()
 
     # If passed along, set the training seed now.
     if args.seed is not None:
@@ -546,58 +512,32 @@ if __name__ == "__main__":
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
 
-    # Prepare models and scheduler
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision
+    scheduler = FlowMatchDiscreteScheduler(
+        shift=7.0,
+        reverse=False, # in inference, this is True.
+        solver='euler'
     )
 
-    text_encoder = T5EncoderModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
+    transformer = HYVideoDiffusionTransformer(
+        EasyDict(text_states_dim=4096, text_states_dim_2=768),
+        in_channels=16,
+        out_channels=16,
+        device=device, dtype=dtype,
+        **HUNYUAN_VIDEO_CONFIG['HYVideo-T/2-cfgdistill'],
     )
+    sd = torch.load(args.pretrained_model_path, map_location='cpu')
+    transformer.load_state_dict(sd['module'], strict=True)
+    transformer.enable_gradient_checkpointing()
 
-    # CogVideoX-2b weights are stored in float16
-    # CogVideoX-5b and CogVideoX-5b-I2V weights are stored in bfloat16
-    load_dtype = torch.bfloat16 if "5b" in args.pretrained_model_name_or_path.lower() else torch.float16
-    transformer = CustomCogVideoXTransformer3DModel.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="transformer",
-        torch_dtype=load_dtype,
-        revision=args.revision,
-        variant=args.variant,
+    vae, _, s_ratio, t_ratio = load_hyvideo_vae(
+        '884-16c-hy', 'fp16',
+        device=device,
     )
-
-    vae = AutoencoderKLCogVideoX.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
-    )
-
-    num_collect = args.stochastic_layers
-    num_layers = len(transformer.transformer_blocks)
-    collect_layers = [2, 3, 8, 9, 11, 15, 21, 33] # hard fixed
-    controlnet_config = dict(
-        num_attention_heads=48 if "5b" in args.pretrained_model_name_or_path.lower() else 30,
-        attention_head_dim=64,
-        mode=args.controlnet_mode,
-        stochastic_layers=args.stochastic_layers,
-        collect_layers=collect_layers,
-        fixed_condtime=args.fixed_cond_timestep,
-        timemed_dim=512,
-        bottleneck_dim=128,
-        num_layers=num_layers,
-    )
-    controlnet = CogVideoXSimpleControlnet(controlnet_config)
-
-
-    if args.pretrained_controlnet_path:
-        sd = torch.load(args.pretrained_controlnet_path, map_location='cpu')
-        m, u = controlnet.load_state_dict(sd['state_dict'], strict=False)
-        print(f'[ Weights from pretrained controlnet was loaded into controlnet ] [M: {len(m)} | U: {len(u)}]')
-    scheduler = CogVideoXDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
+    vae_kwargs = {"s_ratio": s_ratio, "t_ratio": t_ratio}
 
     # We only train the additional adapter controlnet layers
-    text_encoder.requires_grad_(False)
     transformer.requires_grad_(False)
     vae.requires_grad_(False)
-    controlnet.requires_grad_(True)
 
     # For mixed precision training we cast all non-trainable weights (vae, text_encoder and transformer) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -626,17 +566,8 @@ if __name__ == "__main__":
             "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
         )
 
-    text_encoder.to(accelerator.device, dtype=weight_dtype)
-    vae.to('cpu', dtype=weight_dtype)
-    transformer.to(accelerator.device, dtype=weight_dtype)
-    controlnet.to(accelerator.device, dtype=weight_dtype)
-
-    print("IN DEBUG MODE")
-    torch.set_grad_enabled(False)
-
-
-    if args.gradient_checkpointing:
-        transformer.enable_gradient_checkpointing()
+    vae.to('cpu', dtype=dtype)
+    transformer.to(device, dtype=dtype)
 
     # now we will add new LoRA weights to the attention layers
     if args.adapter == 'lora':
@@ -644,35 +575,11 @@ if __name__ == "__main__":
             r=args.lora_rank,
             lora_alpha=args.lora_rank,
             init_lora_weights=True,
-            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+            # txt_attn_proj, img_attn_proj: out
+            # single stream block: "linear1", "linear2"
+            target_modules=['txt_attn_proj', 'img_attn_proj', 'txt_attn_qkv', 'img_attn_qkv'],
         )
-    elif args.adapter == 'adalora':
-        transformer_lora_config = AdaLoraConfig(
-            #r=args.rank,
-            target_r=args.lora_rank,
-            init_r=args.lora_rank * 2,
-            lora_alpha=args.lora_rank,
-            init_lora_weights=True,
-            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-            peft_type="ADALORA",
-        )
-    transformer.add_adapter(transformer_lora_config)
-
-    # pipe here is only used to load the weights
-    if args.pretrained_lora_path:
-        print(f'[ Loading pretrained LoRA weights from {args.pretrained_lora_path} ]')
-        pipe = CogVideoXControlNetPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
-            vae=vae,
-            text_encoder=text_encoder,
-            transformer=transformer,
-            controlnet=controlnet,
-            scheduler=scheduler,
-            torch_dtype=weight_dtype).to(accelerator.device)
-        pipe.i2v_backbone = '5b' in args.pretrained_model_name_or_path
-        pipe.load_lora_weights(args.pretrained_lora_path, adapter_name="adapter")
-        pipe.fuse_lora(lora_scale=1.0, components=["transformer"])
-        del pipe
+        transformer.add_adapter(transformer_lora_config)
 
 
     def unwrap_model(model):
@@ -691,18 +598,9 @@ if __name__ == "__main__":
         )
 
     transformer_lora_parameters = list(filter(lambda p: p.requires_grad, transformer.parameters()))
-    trainable_parameters = list(filter(lambda p: p.requires_grad, controlnet.parameters()))
 
-    params = controlnet.out_projectors
     # Optimization parameters
     params_to_optimize = [{
-            "params": params if controlnet.mode == "elementwise" \
-                else params.parameters(),
-            "lr": args.learning_rate
-        }, {
-            "params": controlnet.weights,
-            "lr": 0.01
-        }, {
             "params": transformer_lora_parameters,
             "lr": args.learning_rate
         }]
@@ -721,7 +619,6 @@ if __name__ == "__main__":
     # Dataset and DataLoader
     train_dataset = VideoDataset(
         root_dir=args.data_root,
-        ann_file=args.ann_file,
     )
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -758,8 +655,8 @@ if __name__ == "__main__":
         )
 
     # Prepare everything with our `accelerator`.
-    transformer, controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        transformer, controlnet, optimizer, train_dataloader, lr_scheduler
+    transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        transformer, optimizer, train_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -772,8 +669,7 @@ if __name__ == "__main__":
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
-        tracker_name = args.tracker_name or "cogvideox-controlnet-lora"
-        accelerator.init_trackers(tracker_name, config=vars(args))
+        accelerator.init_trackers('hunyuan-lora', config=vars(args))
 
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -804,91 +700,70 @@ if __name__ == "__main__":
     # For DeepSpeed training
     model_config = transformer.module.config if hasattr(transformer, "module") else transformer.config
 
-    train_dataset.prompt_embed = compute_prompt_embeddings(
-        tokenizer,
-        text_encoder,
-        train_dataset.prompt_template,
-        model_config.max_text_seq_length,
-        accelerator.device,
-        weight_dtype,
-        requires_grad=False,
-    )
     train_dataset.scaling_factor = vae.config.scaling_factor
-    tokenizer = tokenizer
-    text_encoder = text_encoder.cpu()
 
-    transformer_ = unwrap_model(transformer)
-    time_embed_fn = lambda x: transformer_.time_embedding(
-        transformer_.time_proj(x).bfloat16(), None)
     n_bucs = min(8, accelerator.num_processes * accelerator.gradient_accumulation_steps)
-    min_train_steps = args.train_start_step
-    buc_size = float(scheduler.config.num_train_timesteps - min_train_steps) / n_bucs
-    full_layer_indices = list(range(num_layers))
     device = accelerator.device
     rng = np.random.RandomState(2024 + accelerator.local_process_index)
-    # Prepare rotary embeds
-    image_rotary_emb = (
-        prepare_rotary_positional_embeddings(
-            height=args.height,
-            width=args.width,
-            num_frames=13, # hard code
-            vae_scale_factor_spatial=vae_scale_factor_spatial,
-            patch_size=model_config.patch_size,
-            attention_head_dim=model_config.attention_head_dim,
-            device=accelerator.device,
-        )
-        if model_config.use_rotary_positional_embeddings
-        else None
-    )
+    freqs_cis = get_rotary_pos_embed(transformer)
     for epoch in range(first_epoch, args.num_train_epochs):
-        controlnet.train()
         transformer.train()
 
         for step, batch in enumerate(train_dataloader):
-            models_to_accumulate = [controlnet, transformer]
+            models_to_accumulate = [transformer]
             rank = accelerator.local_process_index
             accum = accelerator.gradient_accumulation_steps
             buc_id = (rank * accum + step % accum) % n_bucs
 
             with accelerator.accumulate(models_to_accumulate):
-                video_latents = batch["video_latents"].permute(0, 2, 1, 3, 4).to(dtype=weight_dtype).to(device)
-                prompt_embeds = batch["prompt_embeds"].to(dtype=weight_dtype).to(device) 
-                image_latents = batch["image_latents"].permute(0, 2, 1, 3, 4).to(device)
-                cond_latents = batch["normal_latents"].permute(0, 2, 1, 3, 4).to(device)
+                video_latents = batch["video_latents"].to(dtype=dtype).to(device)
 
-                batch_size = video_latents.shape[0]
-                t = torch.rand((batch_size,), device=video_latents.device)
-                timesteps = (buc_size * t + buc_id * buc_size).long() + min_train_steps
-                if rank == 0: # set rank 0 to train before min_train_steps
-                    t = torch.rand((batch_size,), device=video_latents.device)
-                    timesteps = ((buc_size + min_train_steps) * t).long()
-                tar_timembed = time_embed_fn(timesteps)
+                u = compute_density_for_timestep_sampling(
+                    weighting_scheme='logit_normal',
+                    batch_size=video_latents.shape[0],
+                    logit_mean=1.0,
+                    logit_std=1.0,
+                    mode_scale=1.0,
+                )
+                indices = (u * scheduler.config.num_train_timesteps).long()
+                timesteps = scheduler.timesteps[indices].to(device=device)
+                timesteps = timesteps.to(device)
 
-                model_pred = inference_step(time_embed_fn, args, video_latents, cond_latents, image_latents, timesteps, transformer, controlnet, scheduler, collect_layers, prompt_embeds, image_rotary_emb, rng)
+                input_dic = dict(
+                    video_latents=video_latents,
+                    timesteps=timesteps,
+                    freqs_cis=freqs_cis,
+                    prompt_embed1=batch["prompt_embed1"].to(dtype=dtype).to(device),
+                    prompt_embed2=batch["prompt_embed2"].to(dtype=dtype).to(device),
+                    attention_mask1=batch["attention_mask1"].to(device),
+                    image_latents=batch["image_latents"].to(device),
+                )
 
-                alphas_cumprod = scheduler.alphas_cumprod[timesteps]
-                weights = 1 / (1 - alphas_cumprod)
-                while len(weights.shape) < len(model_pred.shape):
+                z0 = inference_step(input_dic, transformer, scheduler)
+
+                weights = compute_loss_weighting_for_sd3(
+                    weighting_scheme='sigma_sqrt',
+                    sigmas=scheduler.sigmas,
+                )
+                while len(weights.shape) < len(z0.shape):
                     weights = weights.unsqueeze(-1)
-                dsm_loss = weights * (model_pred - video_latents) ** 2
+                dsm_loss = weights * (z0 - video_latents) ** 2
 
                 loss = dsm_loss.mean()
-                #accelerator.backward(loss)
+                accelerator.backward(loss)
 
                 with torch.no_grad():
-                    parameters = [p for p in controlnet.parameters()]
+                    parameters = transformer_lora_parameters
                     grad_max = [p.grad.abs().max() for p in parameters if p.grad is not None]
                     grad_max = float(sum(grad_max) / len(grad_max)) if grad_max else 0.0
 
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
-                        controlnet.parameters(), args.max_grad_norm)
-                    accelerator.clip_grad_norm_(
                         transformer.parameters(), args.max_grad_norm)
 
-                #if accelerator.state.deepspeed_plugin is None:
-                #    optimizer.step()
-                #    optimizer.zero_grad()
+                if accelerator.state.deepspeed_plugin is None:
+                    optimizer.step()
+                    optimizer.zero_grad()
 
                 lr_scheduler.step()
 
@@ -900,16 +775,11 @@ if __name__ == "__main__":
                 if accelerator.is_main_process:
                     if global_step % args.checkpointing_steps == 1 or global_step == args.max_train_steps:
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.pt")
-                        model = unwrap_model(controlnet)
-                        torch.save({
-                            'state_dict': model.state_dict(),
-                            'config': model.config_dict()
-                            }, save_path)
-                        logger.info(f"Saved state to {save_path}")
+
                         model = unwrap_model(transformer)
                         transformer_lora_layers = get_peft_model_state_dict(model)
 
-                        CogVideoXControlNetPipeline.save_lora_weights(
+                        HunyuanVideoPipeline.save_lora_weights(
                             save_directory=args.output_dir,
                             weight_name=f'pytorch_lora_weights_{global_step}.safetensors',
                             transformer_lora_layers=transformer_lora_layers)

@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from diffusers.models import ModelMixin
+from diffusers.loaders import PeftAdapterMixin
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 
 from .activation_layers import get_activation_layer
@@ -393,7 +394,7 @@ class MMSingleStreamBlock(nn.Module):
         return x + apply_gate(output, gate=mod_gate)
 
 
-class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
+class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin):
     """
     HunyuanVideo Transformer backbone
 
@@ -444,6 +445,8 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
     device: torch.device
         The device of the model.
     """
+
+    _supports_gradient_checkpointing = True
 
     @register_to_config
     def __init__(
@@ -580,6 +583,11 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
             **factory_kwargs,
         )
 
+        self.gradient_checkpointing = False
+
+    def _set_gradient_checkpointing(self, module, value=False):
+        self.gradient_checkpointing = value
+
     def enable_deterministic(self):
         for block in self.double_blocks:
             block.enable_deterministic()
@@ -664,7 +672,14 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
                 freqs_cis,
             ]
 
-            img, txt = block(*double_block_args)
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                img, txt = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
+                    *double_block_args,
+                    use_reentrant=False
+                )
+            else:
+                img, txt = block(*double_block_args)
 
         # Merge txt and img to pass through single stream blocks.
         x = torch.cat((img, txt), 1)
@@ -680,8 +695,14 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
                     max_seqlen_kv,
                     (freqs_cos, freqs_sin),
                 ]
-
-                x = block(*single_block_args)
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
+                    x = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(block),
+                        *single_block_args,
+                        use_reentrant=False
+                    )
+                else:
+                    x = block(*single_block_args)
 
         img = x[:, :img_seq_len, ...]
 

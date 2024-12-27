@@ -310,14 +310,15 @@ We list the height/width/frame settings we support in the following table.
 ```bash
 cd HunyuanVideo
 
-python batch_generate.py \
-    --video-size 960 960 \
-    --video-length 129 \
-    --infer-steps 50 \
-    --prompt "A cat walks on the grass, realistic style." \
-    --flow-reverse \
     --use-cpu-offload \
-    --save-path ./results
+
+
+CUDA_VISIBLE_DEVICES=4 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 0 --n-rank 1 --seed 1000
+
+CUDA_VISIBLE_DEVICES=4 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 0 --n-rank 4 --seed 1000 & CUDA_VISIBLE_DEVICES=5 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 1 --n-rank 4 --seed 1000 & CUDA_VISIBLE_DEVICES=6 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 2 --n-rank 4 --seed 1000 & CUDA_VISIBLE_DEVICES=7 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 3 --n-rank 4 --seed 1000 
+
+
+
 ```
 
 ### Run a Gradio Server
@@ -386,7 +387,22 @@ torchrun --nproc_per_node=8 sample_video.py \
 
 torchrun --nproc_per_node=4 batch_generate.py \
     --video-size 960 960 \
-    --video-length 129 \
+    --video-length 65 \
+    --infer-steps 50 \
+    --prompt "A cat walks on the grass, realistic style." \
+    --flow-reverse \
+    --seed 42 \
+    --ulysses-degree 4 \
+    --ring-degree 1 \
+    --save-path ./results
+
+
+torchrun --nproc_per_node=4 batch_generate.py \
+    --video-size 960 960 \
+    --video-length 65 \
+    --model HYVideo-T/2 \
+    --cfg-scale 1.0 \
+    --embedded_cfg_scale 1.0 \
     --infer-steps 50 \
     --prompt "A cat walks on the grass, realistic style." \
     --flow-reverse \

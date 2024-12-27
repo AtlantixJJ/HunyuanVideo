@@ -350,7 +350,7 @@ class Inference(object):
                     f"Missing key: `{load_key}` in the checkpoint: {model_path}. The keys in the checkpoint "
                     f"are: {list(state_dict.keys())}."
                 )
-        model.load_state_dict(state_dict, strict=True)
+        model.load_state_dict(state_dict, strict=False)#, strict=True)
         return model
 
     @staticmethod
@@ -491,6 +491,7 @@ class HunyuanVideoSampler(Inference):
             theta=self.args.rope_theta,
             use_real=True,
             theta_rescale_factor=1,
+            #interpolation_factor=[128 // (rope_sizes[0] - 1), 1, 1] # added this to compensate for smaller frame number
         )
         return freqs_cos, freqs_sin
 
