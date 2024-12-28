@@ -298,6 +298,7 @@ def get_1d_rotary_pos_embed(
         theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim)
     )  # [D/2]
     # assert interpolation_factor == 1.0, f"interpolation_factor: {interpolation_factor}"
+
     freqs = torch.outer(pos * interpolation_factor, freqs)  # [S, D/2]
     if use_real:
         freqs_cos = freqs.cos().repeat_interleave(2, dim=1)  # [S, D]

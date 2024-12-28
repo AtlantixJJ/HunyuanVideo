@@ -447,7 +447,9 @@ class HunyuanVideoSampler(Inference):
 
         return pipeline
 
-    def get_rotary_pos_embed(self, video_length, height, width):
+    def get_rotary_pos_embed(self, video_length, height, width,
+                             do_frame_scaling=False,
+                             do_theta_scaling=False):
         target_ndim = 3
         ndim = 5 - 2
         # 884
@@ -485,13 +487,15 @@ class HunyuanVideoSampler(Inference):
         assert (
             sum(rope_dim_list) == head_dim
         ), "sum(rope_dim_list) should equal to head_dim of attention layer"
+        interpolation_factor = [32 // (rope_sizes[0] - 1), 1, 1]
+        theta_rescale_factor = [32 // (rope_sizes[0] - 1), 1, 1]
         freqs_cos, freqs_sin = get_nd_rotary_pos_embed(
             rope_dim_list,
-            rope_sizes,
+            rope_sizes, # latent size, already divided by 4
             theta=self.args.rope_theta,
             use_real=True,
-            theta_rescale_factor=[128 // (rope_sizes[0] - 1), 1, 1],
-            #interpolation_factor=[128 // (rope_sizes[0] - 1), 1, 1] # added this to compensate for smaller frame number
+            theta_rescale_factor=theta_rescale_factor if do_theta_scaling else 1.0,
+            interpolation_factor=interpolation_factor if do_frame_scaling else 1.0,
         )
         return freqs_cos, freqs_sin
 
@@ -618,7 +622,9 @@ class HunyuanVideoSampler(Inference):
         # Build Rope freqs
         # ========================================================================
         freqs_cos, freqs_sin = self.get_rotary_pos_embed(
-            target_video_length, target_height, target_width
+            target_video_length, target_height, target_width,
+            do_frame_scaling=kwargs.get('do_frame_scaling', False),
+            do_theta_scaling=kwargs.get('do_theta_scaling', False),
         )
         n_tokens = freqs_cos.shape[0]
 
@@ -662,6 +668,7 @@ class HunyuanVideoSampler(Inference):
             is_progress_bar=True,
             vae_ver=self.args.vae,
             enable_tiling=self.args.vae_tiling,
+            save_intermediate_dir=kwargs.get('save_intermediate_dir', '')
         )[0]
         out_dict["samples"] = samples
         out_dict["prompts"] = prompt
