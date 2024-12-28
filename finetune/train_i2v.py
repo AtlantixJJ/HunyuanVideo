@@ -471,7 +471,7 @@ def inference_step(input_dic, transformer, scheduler):
         guidance=guidance_expand,
         return_dict=True,
     )['x']
-    z0 = noisy_model_input + noise_pred * sigma
+    z0 = noisy_model_input - noise_pred * sigma
     return z0
 
 

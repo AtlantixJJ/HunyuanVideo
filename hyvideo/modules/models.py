@@ -19,6 +19,13 @@ from .modulate_layers import ModulateDiT, modulate, apply_gate
 from .token_refiner import SingleTokenRefiner
 
 
+def create_custom_forward(module):
+    def custom_forward(*inputs):
+        return module(*inputs)
+
+    return custom_forward
+
+
 class MMDoubleStreamBlock(nn.Module):
     """
     A multimodal dit block with seperate modulation for

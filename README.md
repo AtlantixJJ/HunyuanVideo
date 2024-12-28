@@ -313,7 +313,7 @@ cd HunyuanVideo
     --use-cpu-offload \
 
 
-CUDA_VISIBLE_DEVICES=4 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 0 --n-rank 1 --seed 1000
+CUDA_VISIBLE_DEVICES=3 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 0 --n-rank 1 --seed 1000
 
 CUDA_VISIBLE_DEVICES=4 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 0 --n-rank 4 --seed 1000 & CUDA_VISIBLE_DEVICES=5 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 1 --n-rank 4 --seed 1000 & CUDA_VISIBLE_DEVICES=6 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 2 --n-rank 4 --seed 1000 & CUDA_VISIBLE_DEVICES=7 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 3 --n-rank 4 --seed 1000 
 

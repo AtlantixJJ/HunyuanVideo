@@ -490,7 +490,7 @@ class HunyuanVideoSampler(Inference):
             rope_sizes,
             theta=self.args.rope_theta,
             use_real=True,
-            theta_rescale_factor=1,
+            theta_rescale_factor=[128 // (rope_sizes[0] - 1), 1, 1],
             #interpolation_factor=[128 // (rope_sizes[0] - 1), 1, 1] # added this to compensate for smaller frame number
         )
         return freqs_cos, freqs_sin

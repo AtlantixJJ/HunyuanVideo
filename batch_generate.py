@@ -37,11 +37,12 @@ def main():
         for _ in range(3):
             seed = np.random.randint(0, 10000) + args.seed
             # Start sampling
-            output_path = f'{data_dir}/{idx:05d}_seed{seed}.mp4'
+            output_path = f'{data_dir}/{idx:05d}_seed{seed}_interp.mp4'
             outputs = hunyuan_video_sampler.predict(
                 prompt=prompt, 
                 height=args.video_size[0],
                 width=args.video_size[1],
+                video_length=args.video_length,
                 seed=seed,
                 negative_prompt=args.neg_prompt,
                 infer_steps=args.infer_steps,

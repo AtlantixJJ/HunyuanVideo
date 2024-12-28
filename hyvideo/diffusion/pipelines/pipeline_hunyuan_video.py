@@ -16,14 +16,14 @@
 # Modified from diffusers==0.29.2
 #
 # ==============================================================================
+import os
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 import torch
 import torch.distributed as dist
 import numpy as np
 from dataclasses import dataclass
-from packaging import version
-
+from PIL import Image
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.configuration_utils import FrozenDict
 from diffusers.image_processor import VaeImageProcessor
@@ -38,6 +38,7 @@ from diffusers.utils import (
     replace_example_docstring,
     scale_lora_layers,
     unscale_lora_layers,
+    export_to_video
 )
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
@@ -699,6 +700,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         enable_tiling: bool = False,
         n_tokens: Optional[int] = None,
         embedded_guidance_scale: Optional[float] = None,
+        save_intermediate_dir: str = "expr/test",
         **kwargs,
     ):
         r"""
@@ -951,11 +953,15 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             vae_dtype != torch.float32
         ) and not self.args.disable_autocast
 
+        if enable_tiling:
+            self.vae.enable_tiling()
+
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
 
         # if is_progress_bar:
+        intermediate_z0s = []
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -1017,9 +1023,21 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                     )
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(
+                latents, z0 = self.scheduler.step(
                     noise_pred, t, latents, **extra_step_kwargs, return_dict=False
-                )[0]
+                )
+
+                if save_intermediate_dir:
+                    intermediate_z0s.append(z0.cpu())
+                    os.makedirs(save_intermediate_dir, exist_ok=True)
+                    self.transformer.to('cpu')
+                    image = self.vae.decode(
+                        (z0 / self.vae.config.scaling_factor).to(device=device, dtype=vae_dtype),
+                        return_dict=False, generator=generator)[0]
+                    image = ((image[0].permute(1, 2, 3, 0) + 1) / 2 * 255).clamp(0, 255)
+                    image = [Image.fromarray(x) for x in image.byte().cpu().numpy()]
+                    export_to_video(image, f'{save_intermediate_dir}/step_{i}.mp4', fps=30)
+                    self.transformer.to(device)
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
@@ -1042,7 +1060,6 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                     if callback is not None and i % callback_steps == 0:
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, t, latents)
-        
 
         self.transformer.to('cpu') # save memory
 
@@ -1073,15 +1090,10 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             with torch.autocast(
                 device_type="cuda", dtype=vae_dtype, enabled=vae_autocast_enabled
             ):
-                if enable_tiling:
-                    self.vae.enable_tiling()
-                    image = self.vae.decode(
-                        latents, return_dict=False, generator=generator
-                    )[0]
-                else:
-                    image = self.vae.decode(
-                        latents, return_dict=False, generator=generator
-                    )[0]
+
+                image = self.vae.decode(
+                    latents, return_dict=False, generator=generator
+                )[0]
 
             if expand_temporal_dim or image.shape[2] == 1:
                 image = image.squeeze(2)

@@ -124,6 +124,8 @@ vae, _, s_ratio, t_ratio = load_vae(
 vae_kwargs = {"s_ratio": s_ratio, "t_ratio": t_ratio}
 vae.enable_tiling()
 
+assert False
+
 for video_file, prompt in tqdm(zip(video_files, prompts)):
     prompt_embed1, attention_mask1 = encode_prompt(prompt, text_encoder, device)
     prompt_embed2, attention_mask2 = encode_prompt(prompt, text_encoder_2, device)
