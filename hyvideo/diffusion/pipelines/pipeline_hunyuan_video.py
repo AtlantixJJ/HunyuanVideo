@@ -27,7 +27,7 @@ from PIL import Image
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.configuration_utils import FrozenDict
 from diffusers.image_processor import VaeImageProcessor
-from diffusers.loaders import LoraLoaderMixin, TextualInversionLoaderMixin
+from diffusers.loaders import LoraLoaderMixin, TextualInversionLoaderMixin, HunyuanVideoLoraLoaderMixin
 from diffusers.models import AutoencoderKL
 from diffusers.models.lora import adjust_lora_scale_text_encoder
 from diffusers.schedulers import KarrasDiffusionSchedulers
@@ -142,7 +142,7 @@ class HunyuanVideoPipelineOutput(BaseOutput):
     videos: Union[torch.Tensor, np.ndarray]
 
 
-class HunyuanVideoPipeline(DiffusionPipeline):
+class HunyuanVideoPipeline(DiffusionPipeline, HunyuanVideoLoraLoaderMixin):
     r"""
     Pipeline for text-to-video generation using HunyuanVideo.
 
@@ -700,7 +700,9 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         enable_tiling: bool = False,
         n_tokens: Optional[int] = None,
         embedded_guidance_scale: Optional[float] = None,
+        # my added args
         save_intermediate_dir: str = "expr/test",
+        collect_feature: bool = False,
         **kwargs,
     ):
         r"""
@@ -896,6 +898,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         # Here we concatenate the unconditional and text embeddings into a single batch
         # to avoid doing two forward passes
         if self.do_classifier_free_guidance:
+            print("Do classifier free guidance!")
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
             if prompt_mask is not None:
                 prompt_mask = torch.cat([negative_prompt_mask, prompt_mask])
@@ -903,6 +906,8 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                 prompt_embeds_2 = torch.cat([negative_prompt_embeds_2, prompt_embeds_2])
             if prompt_mask_2 is not None:
                 prompt_mask_2 = torch.cat([negative_prompt_mask_2, prompt_mask_2])
+        else:
+            print("No classifier free guidance!")
 
         # 4. Prepare timesteps
         extra_set_timesteps_kwargs = self.prepare_extra_func_kwargs(
@@ -962,6 +967,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
 
         # if is_progress_bar:
         intermediate_z0s = []
+        intermediate_features = []
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -993,7 +999,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                 with torch.autocast(
                     device_type="cuda", dtype=target_dtype, enabled=autocast_enabled
                 ):
-                    noise_pred = self.transformer(  # For an input image (129, 192, 336) (1, 256, 256)
+                    res = self.transformer(  # For an input image (129, 192, 336) (1, 256, 256)
                         latent_model_input,  # [2, 16, 33, 24, 42]
                         t_expand,  # [2]
                         text_states=prompt_embeds,  # [2, 256, 4096]
@@ -1003,9 +1009,11 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                         freqs_sin=freqs_cis[1],  # [seqlen, head_dim]
                         guidance=guidance_expand,
                         return_dict=True,
-                    )[
-                        "x"
-                    ]
+                        collect_feature=collect_feature,
+                    )
+                    noise_pred = res["x"]
+                    if collect_feature:
+                        intermediate_features.append(res["layer_features"])
 
                 # perform guidance
                 if self.do_classifier_free_guidance:
@@ -1109,6 +1117,9 @@ class HunyuanVideoPipeline(DiffusionPipeline):
 
         # Offload all models
         self.maybe_free_model_hooks()
+
+        if collect_feature:
+            return image, intermediate_features
 
         if not return_dict:
             return image

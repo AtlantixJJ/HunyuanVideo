@@ -1,11 +1,12 @@
 import torch
+import sys
 import diffusers
 import glob
 import numpy as np
 from PIL import Image
 from diffusers.utils import load_video, export_to_video
 from tqdm import tqdm
-
+sys.path.append('.')
 from hyvideo.constants import PROMPT_TEMPLATE
 from hyvideo.text_encoder import TextEncoder
 from hyvideo.vae.autoencoder_kl_causal_3d import AutoencoderKLCausal3D

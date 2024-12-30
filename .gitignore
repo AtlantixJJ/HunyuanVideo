@@ -3,3 +3,4 @@ ckpts
 data
 results
 expr
+wandb

@@ -37,7 +37,7 @@ def main():
         for _ in range(3):
             seed = np.random.randint(0, 10000) + args.seed
             # Start sampling
-            output_path = f'{data_dir}/{idx:05d}_seed{seed}_interp.mp4'
+            output_path = f'{data_dir}/{idx:05d}_seed{seed}.mp4'
             outputs = hunyuan_video_sampler.predict(
                 prompt=prompt, 
                 height=args.video_size[0],
@@ -53,13 +53,10 @@ def main():
                 embedded_guidance_scale=args.embedded_cfg_scale
             )
             samples = outputs['samples']
-
             # Save samples
             if 'LOCAL_RANK' not in os.environ or int(os.environ['LOCAL_RANK']) == 0:
-                for i, sample in enumerate(samples):
-                    sample = samples[i].unsqueeze(0)
-                    save_videos_grid(sample, output_path, fps=24)
-                    logger.info(f'Sample save to: {save_path}')
+                save_videos_grid(samples[None], output_path, fps=24)
+                logger.info(f'Sample save to: {save_path}')
 
 if __name__ == "__main__":
     main()

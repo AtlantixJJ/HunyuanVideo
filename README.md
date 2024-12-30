@@ -315,7 +315,11 @@ cd HunyuanVideo
 
 CUDA_VISIBLE_DEVICES=3 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 0 --n-rank 1 --seed 1000
 
-CUDA_VISIBLE_DEVICES=4 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 0 --n-rank 4 --seed 1000 & CUDA_VISIBLE_DEVICES=5 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 1 --n-rank 4 --seed 1000 & CUDA_VISIBLE_DEVICES=6 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 2 --n-rank 4 --seed 1000 & CUDA_VISIBLE_DEVICES=7 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 3 --n-rank 4 --seed 1000 
+export SIZE=960
+export SIZE=720
+CUDA_VISIBLE_DEVICES=2 python batch_generate.py --video-size $SIZE $SIZE --video-length 17 --infer-steps 50 --flow-reverse --rank 0 --n-rank 2 --seed 1000 --cfg-scale 1.0 --embedded-cfg-scale 6.0 & CUDA_VISIBLE_DEVICES=3 python batch_generate.py --video-size $SIZE $SIZE --video-length 17 --infer-steps 50 --flow-reverse --rank 1 --n-rank 2 --seed 1000 --cfg-scale 1.0 --embedded-cfg-scale 6.0
+
+CUDA_VISIBLE_DEVICES=6 python batch_generate.py --video-size $SIZE $SIZE --video-length 17 --infer-steps 50 --flow-reverse --rank 2 --n-rank 4 --seed 1000 --cfg-scale 1.0 --embedded-cfg-scale 1.0 & CUDA_VISIBLE_DEVICES=7 python batch_generate.py --video-size $SIZE $SIZE --video-length 17 --infer-steps 50 --flow-reverse --rank 3 --n-rank 4 --seed 1000 --cfg-scale 1.0 --embedded-cfg-scale 1.0
 
 
 
@@ -402,7 +406,7 @@ torchrun --nproc_per_node=4 batch_generate.py \
     --video-length 65 \
     --model HYVideo-T/2 \
     --cfg-scale 1.0 \
-    --embedded_cfg_scale 1.0 \
+    --embedded-cfg-scale 1.0 \
     --infer-steps 50 \
     --prompt "A cat walks on the grass, realistic style." \
     --flow-reverse \

@@ -617,6 +617,7 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin):
         freqs_cos: Optional[torch.Tensor] = None,
         freqs_sin: Optional[torch.Tensor] = None,
         guidance: torch.Tensor = None,  # Guidance for modulation, should be cfg_scale x 1000.
+        collect_feature: bool = False,
         return_dict: bool = True,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         out = {}
@@ -665,6 +666,8 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin):
         max_seqlen_q = img_seq_len + txt_seq_len
         max_seqlen_kv = max_seqlen_q
 
+        layer_features = []
+
         freqs_cis = (freqs_cos, freqs_sin) if freqs_cos is not None else None
         # --------------------- Pass through DiT blocks ------------------------
         for _, block in enumerate(self.double_blocks):
@@ -687,9 +690,13 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin):
                 )
             else:
                 img, txt = block(*double_block_args)
+            
+            if collect_feature:
+                layer_features.append((img.cpu(), txt.cpu()))
 
         # Merge txt and img to pass through single stream blocks.
         x = torch.cat((img, txt), 1)
+
         if len(self.single_blocks) > 0:
             for _, block in enumerate(self.single_blocks):
                 single_block_args = [
@@ -710,6 +717,9 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin):
                     )
                 else:
                     x = block(*single_block_args)
+                
+                if collect_feature:
+                    layer_features.append(x.cpu())
 
         img = x[:, :img_seq_len, ...]
 
@@ -717,7 +727,10 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin):
         img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
 
         img = self.unpatchify(img, tt, th, tw)
+
         if return_dict:
+            if collect_feature:
+                out["layer_features"] = layer_features
             out["x"] = img
             return out
         return img

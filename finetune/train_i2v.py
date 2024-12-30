@@ -17,21 +17,18 @@ from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
 
 sys.path.append('.')
 from hyvideo.vae import load_vae as load_hyvideo_vae
-from hyvideo.modules import HYVideoDiffusionTransformer, HUNYUAN_VIDEO_CONFIG
 from hyvideo.modules.posemb_layers import get_nd_rotary_pos_embed
 from hyvideo.diffusion.schedulers import FlowMatchDiscreteScheduler
+from hyvideo.modules import HYVideoDiffusionTransformer, HUNYUAN_VIDEO_CONFIG
 from lib.basetype import EasyDict
 
 import diffusers
+#from diffusers import HunyuanVideoPipeline, HunyuanVideoTransformer3DModel
 from diffusers.utils import export_to_video
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.training_utils import free_memory
 from diffusers.optimization import get_scheduler
-from diffusers.models.embeddings import get_3d_rotary_pos_embed
-from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
-from diffusers.pipelines.cogvideo.pipeline_cogvideox import get_resize_crop_region_for_grid
 sys.path.append('.')
-from hyvideo.vae.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
 from accelerate.utils import gather_object
 
 logger = get_logger(__name__)
@@ -61,11 +58,24 @@ def get_args():
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
 
+    # Dataset information
     parser.add_argument(
-        "--train_start_step",
+        "--data_root",
+        type=str,
+        default=None,
+        help=("A folder containing the training data."),
+    )
+    parser.add_argument(
+        "--video-width",
         type=int,
-        default=0,
-        help=("The lowest training step."),
+        default=960,
+        help=("The width of video"),
+    )
+    parser.add_argument(
+        "--video-height",
+        type=int,
+        default=960,
+        help=("The height of video"),
     )
 
     # Training information
@@ -84,26 +94,19 @@ def get_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="cogvideox-controlnet",
+        default="hunyuan-i2v",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
-    # Dataset information
+
     parser.add_argument(
-        "--data_root",
-        type=str,
-        default=None,
-        help=("A folder containing the training data."),
-    )
-    parser.add_argument(
-        "--ann_file",
-        type=str,
-        default=None,
-        help=("The parquet annotation file for the dataset."),
+        "--train_start_step",
+        type=int,
+        default=0,
+        help=("The lowest training step."),
     )
     parser.add_argument(
         "--train_batch_size", type=int, default=1, help="Batch size (per device) for the training dataloader."
     )
-    parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -239,7 +242,7 @@ class VideoDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         latent_path = self.video_latent_files[index]
         idx = latent_path[latent_path.rfind('/')+1:]
-        idx = int(idx[:idx.find('.')])
+        idx = int(idx[:idx.find('_')])
         dic = torch.load(latent_path)
         video_latents = dic['video_latent'][0] * self.scaling_factor
         first_latents = video_latents.clone()
@@ -386,7 +389,7 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str = 'sigma_sqrt', sigmas=
     return weighting
 
 
-def get_rotary_pos_embed(model, video_length=65, height=960, width=960, rope_theta=256):
+def get_rotary_pos_embed(model, video_length=17, height=720, width=720, rope_theta=256):
     target_ndim = 3
     ndim = 5 - 2
     latents_size = [(video_length - 1) // 4 + 1, height // 8, width // 8]
@@ -423,7 +426,8 @@ def get_rotary_pos_embed(model, video_length=65, height=960, width=960, rope_the
         rope_sizes,
         theta=rope_theta,
         use_real=True,
-        theta_rescale_factor=1,
+        theta_rescale_factor=1.0,
+        interpolation_factor=1.0
     )
 
     return freqs_cos, freqs_sin
@@ -438,7 +442,7 @@ def inference_step(input_dic, transformer, scheduler):
     device, dtype = video_latents.device, video_latents.dtype
     n_dim = video_latents.ndim
 
-    embedded_guidance_scale = 6.0
+    embedded_guidance_scale = 1.0
     guidance_expand = torch.tensor(
         [embedded_guidance_scale] * video_latents.shape[0],
         dtype=dtype, device=device) * 1000.0
@@ -458,6 +462,8 @@ def inference_step(input_dic, transformer, scheduler):
     # Add noise according to flow matching.
     noise = torch.randn_like(video_latents, device=device, dtype=dtype)
     noisy_model_input = (1.0 - sigma) * video_latents + sigma * noise
+
+    from IPython import embed; embed()
 
     # Predict the noise residual
     noise_pred = transformer(  # For an input image (129, 192, 336) (1, 256, 256)
@@ -629,11 +635,7 @@ if __name__ == "__main__":
     )
 
     # Scheduler and math around the number of training steps.
-    overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    if args.max_train_steps is None:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        overrode_max_train_steps = True
 
     if use_deepspeed_scheduler:
         from accelerate.utils import DummyScheduler
@@ -661,10 +663,6 @@ if __name__ == "__main__":
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    if overrode_max_train_steps:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-    # Afterwards we recalculate our number of training epochs
-    args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -705,8 +703,8 @@ if __name__ == "__main__":
     n_bucs = min(8, accelerator.num_processes * accelerator.gradient_accumulation_steps)
     device = accelerator.device
     rng = np.random.RandomState(2024 + accelerator.local_process_index)
-    freqs_cis = get_rotary_pos_embed(transformer)
-    for epoch in range(first_epoch, args.num_train_epochs):
+    freqs_cis = get_rotary_pos_embed(transformer, height=args.video_height, width=args.video_width)
+    while True:
         transformer.train()
 
         for step, batch in enumerate(train_dataloader):
@@ -743,14 +741,16 @@ if __name__ == "__main__":
 
                 weights = compute_loss_weighting_for_sd3(
                     weighting_scheme='sigma_sqrt',
-                    sigmas=scheduler.sigmas,
-                )
+                    sigmas=scheduler.sigmas).to(device)
                 while len(weights.shape) < len(z0.shape):
                     weights = weights.unsqueeze(-1)
                 dsm_loss = weights * (z0 - video_latents) ** 2
 
+                #from IPython import embed; embed()
+
                 loss = dsm_loss.mean()
                 accelerator.backward(loss)
+                print('done')
 
                 with torch.no_grad():
                     parameters = transformer_lora_parameters
@@ -786,26 +786,21 @@ if __name__ == "__main__":
 
                 if False:#global_step % 100 == 0:
                     print("Visualize latent")
-                    
-                
-                vae.to(device); transformer.to('cpu'); controlnet.to('cpu'); free_memory()
-                visualize_latent(vae, cond_latents.bfloat16(), f'{args.output_dir}/condviz_{global_step}_{rank}.mp4')
-                visualize_latent(vae, video_latents.bfloat16(), f'{args.output_dir}/videoviz_{global_step}_{rank}.mp4')
-                vae.to('cpu'); transformer.to(device); controlnet.to(device); free_memory()
+                    vae.to(device); transformer.to('cpu'); controlnet.to('cpu'); free_memory()
+                    visualize_latent(vae, cond_latents.bfloat16(), f'{args.output_dir}/condviz_{global_step}_{rank}.mp4')
+                    visualize_latent(vae, video_latents.bfloat16(), f'{args.output_dir}/videoviz_{global_step}_{rank}.mp4')
+                    vae.to('cpu'); transformer.to(device); controlnet.to(device); free_memory()
 
-                if global_step % 500 == 0:
+                if False:#global_step % 500 == 0:
                     print("Visualize latent series")
-                with torch.no_grad():
-                    for t in [980, 999]:#[999, 950, 900, 850, 800]:
-                        t = torch.tensor([t]).long().to(device)
-                        vae.to('cpu'); transformer.to(device); controlnet.to(device); free_memory()
-                        model_pred = inference_step(time_embed_fn, args, video_latents, cond_latents, image_latents, t, transformer, controlnet, scheduler, collect_layers, prompt_embeds, image_rotary_emb, rng)
-                        vae.to(device); transformer.to('cpu'); controlnet.to('cpu'); free_memory()
-                        visualize_latent(vae, model_pred.bfloat16(), f'{args.output_dir}/modelpred_{global_step}_{rank}_sample{int(t[0])}.mp4')
-                vae.to('cpu'); transformer.to(device); controlnet.to(device); free_memory()
-
-                if step == 4:
-                    exit(0)
+                    with torch.no_grad():
+                        for t in [980, 999]:#[999, 950, 900, 850, 800]:
+                            t = torch.tensor([t]).long().to(device)
+                            vae.to('cpu'); transformer.to(device); controlnet.to(device); free_memory()
+                            model_pred = inference_step(time_embed_fn, args, video_latents, cond_latents, image_latents, t, transformer, controlnet, scheduler, collect_layers, prompt_embeds, image_rotary_emb, rng)
+                            vae.to(device); transformer.to('cpu'); controlnet.to('cpu'); free_memory()
+                            visualize_latent(vae, model_pred.bfloat16(), f'{args.output_dir}/modelpred_{global_step}_{rank}_sample{int(t[0])}.mp4')
+                    vae.to('cpu'); transformer.to(device); controlnet.to(device); free_memory()
 
                 if False: #global_step % 1000 == 0: # run full pipeline
                     pipe = CogVideoXControlNetPipeline.from_pretrained(
@@ -853,5 +848,7 @@ if __name__ == "__main__":
             if global_step >= args.max_train_steps:
                 break
 
+        if global_step >= args.max_train_steps:
+            break
     accelerator.wait_for_everyone()
     accelerator.end_training()
