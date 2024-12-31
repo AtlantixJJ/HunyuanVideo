@@ -277,12 +277,6 @@ def unproject(
             + extrinsics[..., :3, 3]
 
 
-def matrix_to_angle(R):
-    """Convert rotation matrix to angles."""
-    # [yaw, pitch, roll]
-    return Rotation.from_matrix(R.cpu().numpy()).as_euler('yxz')
-
-
 def world2view_from_rt(R, t):
     """Get world to view matrix from rotation and translation.
     Args:
@@ -480,6 +474,12 @@ def angle2matrix(angles):
     Rz[:, 1, 1] = cos_z
     # yaw -> pitch -> roll
     return torch.bmm(Rz, torch.bmm(Rx, Ry))
+
+
+def matrix2angle(R):
+    """Convert rotation matrix to angles."""
+    # [yaw, pitch, roll]
+    return Rotation.from_matrix(R.cpu().numpy()).as_euler('yxz')
 
 
 def make_colmap_camera(angles, radius, fov):

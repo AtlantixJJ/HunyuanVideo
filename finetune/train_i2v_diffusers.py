@@ -16,10 +16,11 @@
 import argparse
 import copy
 import logging
-import math
 import os
+#os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
+#os.environ['NCCL_DEBUG'] = 'DETAIL'
 import glob
-import shutil
+from datetime import timedelta
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -28,7 +29,7 @@ import torch
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
-from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
+from accelerate.utils import DistributedType, DistributedDataParallelKwargs, ProjectConfiguration, set_seed, InitProcessGroupKwargs
 from huggingface_hub import create_repo, upload_folder
 from peft import LoraConfig, set_peft_model_state_dict
 from peft.utils import get_peft_model_state_dict
@@ -298,6 +299,13 @@ def parse_args(input_args=None):
         help="The directory where the video latents are stored.",
     )
     parser.add_argument(
+        "--prompt_embed_ann",
+        type=str,
+        default=None,
+        required=True,
+        help="The path to precomputed prompt embeddings (to avoid cpuoffloading text encoder frequently)",
+    )
+    parser.add_argument(
         "--resolution",
         type=int,
         default=720,
@@ -412,6 +420,13 @@ def parse_args(input_args=None):
         "--gradient_checkpointing",
         action="store_true",
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
+    )
+    #gc_ratio
+    parser.add_argument(
+        "--gc_ratio",
+        type=float,
+        default=1.0,
+        help="The ratio of (double block) layers to use gradient checkpointing."
     )
 
     # optimizer
@@ -697,12 +712,15 @@ class VideoDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         root_dir: str = None,
+        prompt_embed_ann: str = None,
     ) -> None:
         super().__init__()
         self.root_dir = root_dir
         self.scaling_factor = None # need to be filled later
+        self.prompt_embed_ann = torch.load(prompt_embed_ann, weights_only=True)
         # find all video latents
         self.video_latent_files = sorted(glob.glob(os.path.join(root_dir, '*.pth')))
+        self.video_latent_files = [v for v in self.video_latent_files if 'seed' in v]
 
     def __len__(self):
         return len(self.video_latent_files)
@@ -711,15 +729,16 @@ class VideoDataset(torch.utils.data.Dataset):
         latent_path = self.video_latent_files[index]
         idx = latent_path[latent_path.rfind('/')+1:]
         idx = int(idx[:idx.find('_')])
-        dic = torch.load(latent_path, weights_only=True)
-        video_latents = dic['video_latent'][0] * self.scaling_factor
+        prompt_embed1, attention_mask1, prompt_embed2 = self.prompt_embed_ann[idx]
+        video_latents = torch.load(latent_path, weights_only=True)
+        video_latents = video_latents[0] * self.scaling_factor
         first_latents = video_latents.clone()
-        first_latents[:, 1:] = 0
+        first_latents[:, :, 1:] = 0
 
         return {
-            'prompt_embed1': dic['prompt_embed1'][0],
-            'prompt_embed2': dic['prompt_embed2'][0],
-            'attention_mask1': dic['attention_mask1'][0],
+            'prompt_embed1': prompt_embed1[0],
+            'prompt_embed2': prompt_embed2[0],
+            'attention_mask1': attention_mask1[0],
             'video_latents': video_latents,
             'image_latents': first_latents,
         }
@@ -742,12 +761,19 @@ def main(args):
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir)
 
+    init_kwargs = InitProcessGroupKwargs(backend="nccl", timeout=timedelta(seconds=600.0))
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
+        kwargs_handlers=[ddp_kwargs, init_kwargs],
     )
+
+    # Disable AMP for MPS.
+    if torch.backends.mps.is_available():
+        accelerator.native_amp = False
 
     if accelerator.state.deepspeed_plugin:
         # Set deepspeed config according to args
@@ -767,7 +793,7 @@ def main(args):
                 'enabled': True if args.mixed_precision == "fp16" else False
             },
             'gradient_accumulation_steps': args.gradient_accumulation_steps,
-            'train_batch_size': args.train_batch_size * args.gradient_accumulation_steps
+            'train_batch_size': args.train_batch_size * args.gradient_accumulation_steps * accelerator.num_processes
         }
         accelerator.state.deepspeed_plugin.deepspeed_config.update(config)
 
@@ -778,11 +804,6 @@ def main(args):
         weight_dtype = torch.float16
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
-
-    # Disable AMP for MPS. A technique for accelerating machine learning computations on iOS and macOS devices.
-    if torch.backends.mps.is_available():
-        logger.info("MPS is enabled. Disabling AMP.")
-        accelerator.native_amp = False
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -826,6 +847,8 @@ def main(args):
         subfolder="transformer",
         torch_dtype=weight_dtype
     )
+    print("Set the mode of transformer rotary embedding to I2V mode!")
+    transformer.rope.set_mode('i2v')
 
     noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -1023,12 +1046,16 @@ def main(args):
     optimizer = get_optimizer(args, params_to_optimize, use_deepspeed=use_deepspeed_optimizer)
 
     # Prepare dataset and dataloader.
-    train_dataset = VideoDataset(args.data_dir)
+    train_dataset = VideoDataset(
+        root_dir=args.data_dir,
+        prompt_embed_ann=args.prompt_embed_ann
+    )
     train_dataset.scaling_factor = vae.config.scaling_factor
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
         batch_size=args.train_batch_size,
+        drop_last=True,
         num_workers=0,
     )
 
@@ -1052,6 +1079,8 @@ def main(args):
         )
 
     # Prepare everything with our `accelerator`.
+
+    #from IPython import embed; embed()
 
     transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         transformer, optimizer, train_dataloader, lr_scheduler
@@ -1125,13 +1154,15 @@ def main(args):
     image_logs = None
     while True:
         transformer.train()
+        train_dataloader.reset()
+        print("start new dataloading")
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(transformer):
                 latents = batch["video_latents"].to(dtype=weight_dtype).to(device)
                 prompt_embed1 = batch["prompt_embed1"].to(dtype=weight_dtype).to(device)
                 prompt_embed2 = batch["prompt_embed2"].to(dtype=weight_dtype).to(device)
                 attention_mask1 = batch["attention_mask1"].to(device)
-                image_latents = batch["image_latents"].to(device)
+                image_latents = batch["image_latents"].to(device).to(dtype=weight_dtype)
 
                 # text encoding: we will use pre-computed embedding to avoid loading text encoder
                 """
@@ -1170,13 +1201,14 @@ def main(args):
                 noisy_model_input = (1.0 - sigmas) * latents + sigmas * noise
 
                 # controlnet training
-                #concatenated_noisy_model_input = torch.cat([noisy_model_input, control_latents], dim=1)
+                noisy_model_input = torch.cat([image_latents[:, :, :1], noisy_model_input], dim=2)
 
-                embedded_guidance_scale = 1.0
                 guidance_vec = torch.tensor(
-                    [embedded_guidance_scale] * latents.shape[0],
+                    [args.embed_cfg_scale] * latents.shape[0],
                     dtype=weight_dtype, device=device) * 1000.0
                 #guidance_vec = None
+
+                #from IPython import embed; embed()
 
                 model_pred = transformer(
                     hidden_states=noisy_model_input,
@@ -1185,7 +1217,9 @@ def main(args):
                     encoder_attention_mask=attention_mask1,
                     pooled_projections=prompt_embed2,
                     guidance=guidance_vec,
+                    gc_ratio=args.gc_ratio,
                     return_dict=False)[0]
+                model_pred = model_pred[:, :, 1:]
 
                 # these weighting schemes use a uniform timestep sampling
                 # and instead post-weight the loss
@@ -1274,12 +1308,14 @@ def main(args):
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
+            accelerator.wait_for_everyone()
 
             if global_step >= args.max_train_steps:
                 break
-        
+
         if global_step >= args.max_train_steps:
             break
+
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:

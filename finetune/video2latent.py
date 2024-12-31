@@ -13,7 +13,7 @@ from hyvideo.vae.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
 from hyvideo.vae import load_vae
 
 device = 'cuda'
-data_dir = 'data/hunyuan_distillation'
+data_dir = 'data/hunyuan_distillation_cfg6'
 video_files = sorted(glob.glob(f'{data_dir}/*.mp4'))
 prompt_file = f'{data_dir}/new_prompts.txt'
 prompts = [l.strip() for l in open(prompt_file, 'r').readlines() if len(l) > 5]
@@ -125,10 +125,17 @@ vae, _, s_ratio, t_ratio = load_vae(
 vae_kwargs = {"s_ratio": s_ratio, "t_ratio": t_ratio}
 vae.enable_tiling()
 
+prompt_anns = []
 
-for video_file, prompt in zip(video_files, prompts):
+print("Preprocessing prompts...")
+for i, prompt in enumerate(tqdm(prompts)):
     prompt_embed1, attention_mask1 = encode_prompt(prompt, text_encoder, device)
     prompt_embed2, attention_mask2 = encode_prompt(prompt, text_encoder_2, device)
+    prompt_anns.append([prompt_embed1.cpu(), attention_mask1.cpu(), prompt_embed2.cpu()])
+torch.save(prompt_anns, f'{data_dir}/new_prompts.pth')
+
+print("Preprocessing video...")
+for video_file in tqdm(video_files):
     images = preprocess(load_video(video_file)).to(device).half()
     video_latent = vae.encode(images).latent_dist.sample()
 
@@ -136,9 +143,4 @@ for video_file, prompt in zip(video_files, prompts):
     #export_to_video(postprocess(image_recon), 'test.mp4')
     #from IPython import embed; embed()
 
-    torch.save({
-        'prompt_embed1': prompt_embed1.cpu(),
-        'attention_mask1': attention_mask1.cpu(),
-        'prompt_embed2': prompt_embed2.cpu(),
-        'video_latent': video_latent.cpu(),
-    }, video_file.replace(".mp4", ".pth"))
+    torch.save(video_latent.cpu(), video_file.replace(".mp4", ".pth"))
