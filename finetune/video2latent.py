@@ -9,7 +9,6 @@ from tqdm import tqdm
 sys.path.append('.')
 from hyvideo.constants import PROMPT_TEMPLATE
 from hyvideo.text_encoder import TextEncoder
-from hyvideo.vae.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
 from hyvideo.vae import load_vae
 
 device = 'cuda'
