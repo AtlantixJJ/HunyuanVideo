@@ -1,9 +1,10 @@
 import os
+import sys
 import time
 from pathlib import Path
 from loguru import logger
 from datetime import datetime
-
+sys.path.append('.')
 from hyvideo.utils.file_utils import save_videos_grid
 from hyvideo.config import parse_args
 from hyvideo.inference import HunyuanVideoSampler
@@ -52,11 +53,9 @@ def main():
 
     # Save samples
     if 'LOCAL_RANK' not in os.environ or int(os.environ['LOCAL_RANK']) == 0:
-        for i, sample in enumerate(samples):
-            sample = samples[i].unsqueeze(0)
-            save_path = f"expr/test/fs{fs}_ts{ts}.mp4"
-            save_videos_grid(sample, save_path, fps=24)
-            logger.info(f'Sample save to: {save_path}')
+        save_path = f"expr/test/fs{fs}_ts{ts}.mp4"
+        save_videos_grid(samples[None], save_path, fps=24)
+        logger.info(f'Sample save to: {save_path}')
 
 if __name__ == "__main__":
     main()

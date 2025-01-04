@@ -1,10 +1,11 @@
 import sys
 import argparse
 import torch
-from diffusers import HunyuanVideoPipeline, HunyuanVideoTransformer3DModel
+from diffusers import HunyuanVideoPipeline#, HunyuanVideoTransformer3DModel
 from diffusers.utils import export_to_video, load_video, load_image
 
 sys.path.append('.')
+from lib.transformer_hunyuan_video import MyHunyuanVideoTransformer3DModel
 from lib.pipeline_hunyuan_image2video import HunyuanImageToVideoPipeline
 
 
@@ -12,7 +13,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Sample diffusers")
     # model loading
     parser.add_argument("--model_name", type=str, default="hunyuanvideo-community/HunyuanVideo")
-    parser.add_argument("--lora_path", type=str, default="expr/lora/pytorch_lora_weights_50.safetensors")
+    parser.add_argument("--pretrained_path", type=str, default="")
+    parser.add_argument("--pretrained_lora_path", type=str, default="")
+    parser.add_argument("--lora_rank", type=int, default=0)
+    parser.add_argument("--vpt_mode", type=str, default="")
     # generation mode
     parser.add_argument("--mode", type=str, default="i2v", choices=["t2v", "i2v"])
     # input
@@ -39,7 +43,7 @@ if __name__ == "__main__":
     device = 'cuda'
 
     # has to initialize transformer here using bfloat16, otherwise the model will explode
-    transformer = HunyuanVideoTransformer3DModel.from_pretrained(
+    transformer = MyHunyuanVideoTransformer3DModel.from_pretrained(
         args.model_name, subfolder="transformer", torch_dtype=torch.bfloat16
     )
 
@@ -62,13 +66,21 @@ if __name__ == "__main__":
         else:
             first_frame = load_image(args.first_image_path)
 
-    pipe.vae.enable_tiling()
-    pipe.to(device)
+    if len(args.vpt_mode) > 0:
+        print("Adding VPT to the model")
+        pipe.transformer.add_vpt(args.vpt_mode)
+        # manual load the vpt weights
+        if len(args.pretrained_path) > 0:
+            vpt_dict = torch.load(args.pretrained_path, map_location='cpu')
+            pipe.transformer.load_vpt(vpt_dict)
 
-    if len(args.lora_path) > 0:
-        print(f"Loading LoRA weights from {args.lora_path}")
-        pipe.load_lora_weights(args.lora_path, adapter_name="adapter")
+    if len(args.pretrained_lora_path) > 0:
+        print(f"Loading LoRA weights from {args.pretrained_lora_path}")
+        pipe.load_lora_weights(args.pretrained_lora_path, adapter_name="adapter")
         pipe.fuse_lora(['transformer'], 1.0)
+
+    pipe.vae.enable_tiling()
+    pipe.to(device).to(torch.bfloat16)
 
     common_dict = dict(
         prompt=args.prompt,
@@ -83,7 +95,7 @@ if __name__ == "__main__":
     elif args.mode == 'i2v':
         output = pipe(
             first_frame_or_latents=first_frame,
-            save_intermediate_dir=args.output_path[:args.output_path.rfind('.')],
+            #save_intermediate_dir=args.output_path[:args.output_path.rfind('.')],
             **common_dict
         ).frames[0]
 

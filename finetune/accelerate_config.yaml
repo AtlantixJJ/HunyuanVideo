@@ -4,7 +4,7 @@ debug: false
 deepspeed_config:
   deepspeed_config_file: finetune/ds_config.json
   zero3_init_flag: false
-distributed_type: DEEPSPEED #MULTI_GPU # DEEPSPEED
+distributed_type: MULTI_GPU #MULTI_GPU # DEEPSPEED
 downcast_bf16: 'no'
 enable_cpu_affinity: false
 machine_rank: 0
