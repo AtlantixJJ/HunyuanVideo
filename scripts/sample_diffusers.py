@@ -58,7 +58,7 @@ if __name__ == "__main__":
             transformer=transformer,
             torch_dtype=torch.float16)
         pipe.transformer.rope.set_mode('i2v')
-    
+
     if len(args.first_image_path) > 0:
         # if the path is a video file
         if args.first_image_path.endswith('.mp4'):

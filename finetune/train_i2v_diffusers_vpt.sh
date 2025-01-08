@@ -1,12 +1,12 @@
 #!/bin/bash
 
-#python finetune/train_i2v_diffusers.py \
+# python finetune/train_i2v_diffusers_vpt.py \
 
-#accelerate launch --config_file finetune/accelerate_config.yaml finetune/train_i2v_diffusers.py \
+# accelerate launch --config_file finetune/accelerate_config.yaml finetune/train_i2v_diffusers_vpt.py \
 
 VPT="deep-add-1"
 OUTPUT_DIR="expr/vpt-${VPT}"
-
+CKPT_PATH="expr/vpt-deep-add-1/vpt-250.pt"
 # --pretrained_lora_path $LORA_PATH \
 
 
@@ -19,10 +19,9 @@ accelerate launch --config_file finetune/accelerate_config.yaml finetune/train_i
   --resolution 720 \
   --mixed_precision "bf16" \
   --train_batch_size 1 \
-  --vpt_mode $VPT \
-  --gradient_accumulation_steps 2 \
-  --gradient_checkpointing --gc_ratio 0.8 \
-  --use_8bit_adam \
+  --vpt_mode $VPT --logit_mean 2.0 \
+  --gradient_accumulation_steps 1 \
+  --gradient_checkpointing --gc_ratio 0.75 \
   --learning_rate 1e-3 \
   --lr_scheduler "constant" \
   --checkpointing_steps 50 \

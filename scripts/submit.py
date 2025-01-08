@@ -35,12 +35,12 @@ def sample():
 
     args = [
         ('00000_seed1981', 'A close-up portrait of a young man with short black hair, wearing a black hoodie, captured while yawning or shouting. His mouth is wide open, showing his teeth and tongue. His eyes are squinting, eyebrows raised, and his skin shows visible acne and redness. The background is plain light gray, and the lighting is soft and even, clearly illuminating his face.'),
-        ('00001_seed4507', 'A garden comes to life as a kaleidoscope of butterflies flutters amidst the blossoms, their delicate wings casting shadows on the petals below. In the background, a grand fountain cascades water with a gentle splendor, its rhythmic sound providing a soothing backdrop. Beneath the cool shade of a mature tree, a solitary wooden chair invites solitude and reflection, its smooth surface worn by the touch of countless visitors seeking a moment of tranquility in nature\'s embrace.'),
+        #('00001_seed4507', 'A garden comes to life as a kaleidoscope of butterflies flutters amidst the blossoms, their delicate wings casting shadows on the petals below. In the background, a grand fountain cascades water with a gentle splendor, its rhythmic sound providing a soothing backdrop. Beneath the cool shade of a mature tree, a solitary wooden chair invites solitude and reflection, its smooth surface worn by the touch of countless visitors seeking a moment of tranquility in nature\'s embrace.'),
     ]
     prompt = []
     expr_name = 'vpt-deep-add-1'
     
-    for iteration in [1, 50, 100, 150, 200, 250]:#[1, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]:
+    for iteration in [1, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]:
         for file_name, prompt in args:
             lora_path = f'expr/{expr_name}/pytorch_lora_weights_{iteration}.safetensors' if 'lora' in expr_name else ''
             if iteration == 0:

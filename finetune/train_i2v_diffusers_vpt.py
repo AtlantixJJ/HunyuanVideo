@@ -25,6 +25,7 @@ from datetime import timedelta
 from contextlib import nullcontext
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import transformers
@@ -35,7 +36,7 @@ from huggingface_hub import create_repo, upload_folder
 from peft import LoraConfig, set_peft_model_state_dict
 from peft.utils import get_peft_model_state_dict
 from tqdm.auto import tqdm
-
+from accelerate.utils import gather_object
 import diffusers
 from diffusers import FlowMatchEulerDiscreteScheduler, HunyuanVideoPipeline, AutoencoderKLHunyuanVideo
 from diffusers.optimization import get_scheduler
@@ -50,6 +51,8 @@ from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_
 from diffusers.utils.torch_utils import is_compiled_module
 sys.path.append('.')
 from lib.transformer_hunyuan_video import MyHunyuanVideoTransformer3DModel
+from PIL import Image
+from diffusers.utils import export_to_video
 
 
 if is_wandb_available():
@@ -604,12 +607,15 @@ class VideoDataset(torch.utils.data.Dataset):
         return len(self.video_latent_files)
 
     def __getitem__(self, index):
+        index = 0
+
         latent_path = self.video_latent_files[index]
         idx = latent_path[latent_path.rfind('/')+1:]
         idx = int(idx[:idx.find('_')])
         prompt_embed1, attention_mask1, prompt_embed2 = self.prompt_embed_ann[idx]
         video_latents = torch.load(latent_path, weights_only=True)
         video_latents = video_latents[0] * self.scaling_factor
+        #video_latents = video_latents[:, :, :1] # only take the first frame
         first_latents = video_latents.clone()
         first_latents[:, :, 1:] = 0
 
@@ -620,6 +626,16 @@ class VideoDataset(torch.utils.data.Dataset):
             'video_latents': video_latents,
             'image_latents': first_latents,
         }
+
+
+@torch.no_grad
+def visualize_latent(vae, z0):
+    image = vae.decode(
+        z0 / vae.config.scaling_factor,
+        return_dict=False)[0]
+    image = ((image[0].permute(1, 2, 3, 0) + 1) / 2 * 255).clamp(0, 255)
+    return [Image.fromarray(x) for x in image.byte().cpu().numpy()]
+
 
 
 def main(args):
@@ -638,7 +654,7 @@ def main(args):
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir)
 
     init_kwargs = InitProcessGroupKwargs(backend="nccl", timeout=timedelta(seconds=600.0))
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -699,7 +715,9 @@ def main(args):
 
     # If passed along, set the training seed now.
     if args.seed is not None:
-        set_seed(args.seed)
+        rng = np.random.RandomState(args.seed)
+        seed_ = rng.randint(1, 10000, size=(accelerator.num_processes,))
+        set_seed(args.seed + seed_[accelerator.local_process_index])
 
     # Handle the repository creation
     if accelerator.is_main_process:
@@ -724,7 +742,7 @@ def main(args):
         torch_dtype=weight_dtype
     )
     print("Set the mode of transformer rotary embedding to I2V mode!")
-    transformer.rope.set_mode('i2v')
+    transformer.rope.set_mode('i2v-spatial')
 
     noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -768,6 +786,7 @@ def main(args):
     if len(args.vpt_mode) > 0:
         transformer.add_vpt(args.vpt_mode)
         if args.pretrained_path:
+            print(f"Load vpt from {args.pretrained_path}")
             vpt_dic = torch.load(args.pretrained_path, weights_only=True, map_location='cpu')
             transformer.load_vpt(vpt_dic)
 
@@ -814,7 +833,7 @@ def main(args):
             'lr': 1e-3
         } , {
             'params': [transformer.vpt_scale],
-            'lr': 0.1
+            'lr': 0.01
         }
     ]
     optimizer = get_optimizer(args, params_to_optimize, use_deepspeed=use_deepspeed_optimizer)
@@ -925,6 +944,7 @@ def main(args):
             sigma = sigma.unsqueeze(-1)
         return sigma
 
+    x_timesteps, y_gradmaxs, z_losses = [], [], []
     image_logs = None
     while True:
         transformer.train()
@@ -1004,7 +1024,7 @@ def main(args):
                     (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
                     1,
                 )
-                loss = loss.mean() * 100
+                loss = loss.mean()
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
@@ -1012,9 +1032,8 @@ def main(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 with torch.no_grad():
-                    grad_max = [p.grad.abs().max() for p in transformer.parameters() if p.grad is not None]
-                    grad_max = float(sum(grad_max) / len(grad_max)) if grad_max else 0.0
-
+                    grad_norm = [p.grad.norm() for p in transformer.parameters() if p.grad is not None]
+                    grad_norm = float(sum(grad_norm) / len(grad_norm)) if grad_norm else 0.0
 
                 if accelerator.state.deepspeed_plugin is None:
                     optimizer.step()
@@ -1062,10 +1081,34 @@ def main(args):
                         vpt_path = os.path.join(args.output_dir, f"vpt-{global_step}.pt")
                         torch.save(model.vpt_state_dict(), vpt_path)
 
+            """
+            bin_loss = gather_object((int(t), grad_norm, float(loss)))
+            for i in range(len(bin_loss) // 3):
+                t, val, l = bin_loss[i * 3], bin_loss[i * 3 + 1], bin_loss[i * 3 + 2]
+                x_timesteps.append(t)
+                y_gradmaxs.append(val)
+                z_losses.append(l)
+            if accelerator.is_main_process:
+                np.save(os.path.join(args.output_dir, 'timestep_gradmax.npy'), np.array([x_timesteps, y_gradmaxs, z_losses]))
+                plt.scatter(x_timesteps, y_gradmaxs)
+                plt.savefig(os.path.join(args.output_dir, 'timestep_gradmax.png'))
+                plt.close()
+            """
+
+            if global_step % 10 == 1:
+                vae.enable_tiling()
+                transformer.to('cpu'); vae.to(device)
+                z0 = noisy_model_input[:, :, 1:] - model_pred * sigmas
+                images = visualize_latent(vae, z0.bfloat16())
+                export_to_video(images, f'{args.output_dir}/trainviz_{global_step}_{int(t[0])}.mp4', fps=30)
+                vae.to('cpu'); transformer.to(device)
+
             logs = {
                 "loss": loss.detach().item(),
                 "lr": lr_scheduler.get_last_lr()[0],
-                "grad_max": grad_max,
+                "grad_norm": grad_norm,
+                "vpt_scale": float(transformer.module.vpt_scale.mean()),
+                "vpt_norm": float(transformer.module.vpt.abs().mean()),
             }
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)

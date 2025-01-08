@@ -312,6 +312,8 @@ cd HunyuanVideo
 
     --use-cpu-offload \
 
+python scripts/sample_diffusers.py --mode t2v --width 1440 --height 720 --num_frames 17 --output_path expr/test/left_right.mp4 --prompt "1x2 panel of the same young man. Evenly divided into two panel. LEFT: A black hair man wearing a brown T-shirt, running on the grass. RIGHT: The same person falling onto the ground."
+
 
 CUDA_VISIBLE_DEVICES=3 python batch_generate.py --video-size 960 960 --video-length 17 --infer-steps 50 --flow-reverse --rank 0 --n-rank 1 --seed 1000
 

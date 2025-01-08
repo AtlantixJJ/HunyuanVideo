@@ -3,7 +3,7 @@ import torch
 
 torch.set_grad_enabled(False)
 data_dir = 'expr/vpt-deep-add-1'
-indices = [1] + list(range(50, 251, 50))
+indices = [1] + list(range(50, 1001, 50))
 all_files = [f'{data_dir}/vpt-{i}.pt' for i in indices]
 all_files = [torch.load(f, weights_only=True, map_location='cpu') for f in all_files]
 
