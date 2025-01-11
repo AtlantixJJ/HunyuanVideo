@@ -48,7 +48,7 @@ class MyHunyuanVideoRotaryPosEmbed(nn.Module):
             L = H * W // 4
             ff_cos, ff_sin = freqs_cos[:L], freqs_sin[:L]
             return torch.cat([ff_cos, freqs_cos], dim=0), torch.cat([ff_sin, freqs_sin], dim=0)
-        elif self.mode == 'i2v-spatial':
+        elif self.mode == 'i2v-spatial-1':
             freqs_cos, freqs_sin = self.rope_from_shape([B, C, F - 1, H, W], device)
             L = H * W // 4
             ff_cos, ff_sin = self.rope_from_shape([B, C, 1, H, W * 2], device)

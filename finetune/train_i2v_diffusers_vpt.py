@@ -607,8 +607,6 @@ class VideoDataset(torch.utils.data.Dataset):
         return len(self.video_latent_files)
 
     def __getitem__(self, index):
-        index = 0
-
         latent_path = self.video_latent_files[index]
         idx = latent_path[latent_path.rfind('/')+1:]
         idx = int(idx[:idx.find('_')])

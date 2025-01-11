@@ -15,10 +15,10 @@ def parse_args():
     parser.add_argument("--model_name", type=str, default="hunyuanvideo-community/HunyuanVideo")
     parser.add_argument("--pretrained_path", type=str, default="")
     parser.add_argument("--pretrained_lora_path", type=str, default="")
-    parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--vpt_mode", type=str, default="")
     # generation mode
     parser.add_argument("--mode", type=str, default="i2v", choices=["t2v", "i2v"])
+    parser.add_argument("--rotary_mode", type=str, default="i2v", choices=["i2v-temporal-1", "i2v-temporal-2", "i2v-spatial-1"])
     # input
     parser.add_argument("--first_image_path", type=str, default="data/hunyuan_distillation_cfg6/00000_seed1981.mp4")
     parser.add_argument("--prompt", type=str, default="A cat walks on the grass, realistic")
@@ -57,7 +57,7 @@ if __name__ == "__main__":
             args.model_name,
             transformer=transformer,
             torch_dtype=torch.float16)
-        pipe.transformer.rope.set_mode('i2v')
+        pipe.transformer.rope.set_mode(args.rotary_mode)
 
     if len(args.first_image_path) > 0:
         # if the path is a video file
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     if len(args.pretrained_lora_path) > 0:
         print(f"Loading LoRA weights from {args.pretrained_lora_path}")
         pipe.load_lora_weights(args.pretrained_lora_path, adapter_name="adapter")
-        pipe.fuse_lora(['transformer'], 1.0)
+        #pipe.fuse_lora(['transformer'], 1.0)
 
     pipe.vae.enable_tiling()
     pipe.to(device).to(torch.bfloat16)
