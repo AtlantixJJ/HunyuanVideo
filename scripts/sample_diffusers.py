@@ -9,6 +9,19 @@ from lib.transformer_hunyuan_video import MyHunyuanVideoTransformer3DModel
 from lib.pipeline_hunyuan_image2video import HunyuanImageToVideoPipeline
 
 
+def crop_resize(pil_image, size=(720, 720)):
+    old_size = pil_image.size
+    min_size = min(old_size)
+    new_size = (min_size, min_size)
+    # crop with new size
+    pil_image = pil_image.crop(((old_size[0] - new_size[0]) // 2,
+                                 (old_size[1] - new_size[1]) // 2,
+                                 (old_size[0] + new_size[0]) // 2,
+                                 (old_size[1] + new_size[1]) // 2))
+    # resize to desired size
+    return pil_image.resize(size)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Sample diffusers")
     # model loading
@@ -65,6 +78,8 @@ if __name__ == "__main__":
             first_frame = load_video(args.first_image_path)[0]
         else:
             first_frame = load_image(args.first_image_path)
+        
+        first_frame = crop_resize(first_frame, (args.width, args.height))
 
     if len(args.vpt_mode) > 0:
         print("Adding VPT to the model")

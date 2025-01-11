@@ -5,12 +5,9 @@ import torch
 import numpy as np
 import pandas as pd
 
-from tqdm import tqdm
 from PIL import Image
 from torchvision.transforms import ToTensor, Compose, Resize, Lambda, CenterCrop
 from os.path import join as osj
-from typing import NamedTuple
-from plyfile import PlyData, PlyElement
 
 from lib.ops import farthest_point_sampling
 from lib.utils import imread_pil
